@@ -1,8 +1,8 @@
-﻿//+------------------------------------------------------------------+
-//|                                              breaksPL101318.mq4    |
+﻿////+------------------------------------------------------------------+
+//|                                              breaksPL101811.mq4    |
 //+------------------------------------------------------------------+
-#property copyright "breaks101115"
-#property version   "1.05"
+#property copyright "breaksPL101811"
+#property version   "1.06"
 #property strict
 
 //--- パラメータ
@@ -47,7 +47,7 @@ int OnInit()
    StringReplace(ts, ":", "");
    StringReplace(ts, ".", "");
    StringReplace(ts, " ", "_");
-   CSVFileName = "breaks101115_" + ts + ".csv";
+   CSVFileName = "breaksPL101811_" + ts + ".csv";
 
    InitializeCSV();
    
@@ -398,7 +398,7 @@ int OpenRealPosition(int type, double threshold, double slThreshold)
       RefreshRates();
       Sleep(100);
       price = (type == OP_BUY) ? MarketInfo(Symbol(), MODE_ASK) : MarketInfo(Symbol(), MODE_BID);
-      ticket = OrderSend(Symbol(), type, lots, price, 3, 0, 0, "breaks101115", GetMagicNumber(), 0, clrGreen);
+      ticket = OrderSend(Symbol(), type, lots, price, 3, 0, 0, "breaksPL101811", GetMagicNumber(), 0, clrGreen);
       if(ticket > 0) break;
       Sleep(500);
    }
