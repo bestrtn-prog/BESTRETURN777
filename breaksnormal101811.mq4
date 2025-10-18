@@ -1,0 +1,581 @@
+//+------------------------------------------------------------------+
+//|                                              breaksnormal101811.mq4  |
+//+------------------------------------------------------------------+
+#property copyright "breaksnormal101811"
+#property version   "1.08"
+#property strict
+
+//--- パラメータ
+input double  RiskPercent        = 5.0;   // リスク許容率(%)
+input double  MarginLimitPercent = 5.0;   // 証拠金制限率（%）（日本規制4%に対する上乗せ）
+input int     LookbackBars       = 20;    // エントリー閾値取得バー数
+input int     ExitLookbackBars   = 10;    // エグジット閾値取得バー数
+input double  EntrySpreadPips    = 3.0;   // エントリー許容スプレッド(pips)
+input double  ExitSpreadPips     = 30.0;  // エグジット許容スプレッド(pips)
+input int     HistoryBars        = 200;    // 起動時の過去分析バー数
+
+//--- グローバル変数
+string   CSVFileName;
+bool     ShouldCloseExistingPosition = false;  // 起動時に既存ポジションをクローズするフラグ
+
+//+------------------------------------------------------------------+
+//| 初期化                                                           |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_MINUTES);
+   StringReplace(ts, ":", "");
+   StringReplace(ts, ".", "");
+   StringReplace(ts, " ", "_");
+   CSVFileName = "breaksnormal101811_" + ts + ".csv";
+
+   InitializeCSV();
+   
+   // 起動時に過去のバーを分析して状態を復元
+   AnalyzeHistoricalBars();
+   
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| ティック処理                                                    |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // 起動時に既存ポジションをクローズする必要がある場合
+   if(ShouldCloseExistingPosition)
+   {
+      CloseAllPositions();
+      ShouldCloseExistingPosition = false;
+      Print("起動時の既存ポジションをクローズしました。次のエントリーまで待機します。");
+      return;
+   }
+   
+   if(HasRealPosition())
+   {
+      CheckRealPositionExit();
+      return;
+   }
+   CheckEntrySignals();
+}
+
+//+------------------------------------------------------------------+
+//| 実ポジ有無確認                                                  |
+//+------------------------------------------------------------------+
+bool HasRealPosition()
+{
+   for(int i=OrdersTotal()-1; i>=0; i--)
+   {
+      if(OrderSelect(i,SELECT_BY_POS,MODE_TRADES)
+         && OrderSymbol()==Symbol()
+         && OrderMagicNumber()==GetMagicNumber())
+         return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| 実ポジ エグジット処理                                           |
+//+------------------------------------------------------------------+
+void CheckRealPositionExit()
+{
+   double bid = MarketInfo(Symbol(), MODE_BID);
+   double ask = MarketInfo(Symbol(), MODE_ASK);
+   double tick = GetTickSize();
+   int pipScale = (Digits == 3 || Digits == 5) ? 10 : 1;
+   double spreadPips = (ask - bid) / tick / pipScale;
+   if(spreadPips > ExitSpreadPips) return;
+
+   int maxBars = Bars(Symbol(),0);
+   if(ExitLookbackBars >= maxBars) return;
+
+   double highTh = GetHighThreshold(ExitLookbackBars);
+   double lowTh  = GetLowThreshold(ExitLookbackBars);
+
+   for(int i=OrdersTotal()-1; i>=0; i--)
+   {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol()||OrderMagicNumber()!=GetMagicNumber()) continue;
+
+      bool   shouldClose = false;
+      string exitDir     = "";
+      double threshold   = 0;
+      double closePrice  = 0;
+
+      if(OrderType()==OP_BUY && bid <= lowTh)
+      {
+         shouldClose = true; exitDir = "Sell"; threshold = lowTh; closePrice = bid;
+      }
+      else if(OrderType()==OP_SELL && bid >= highTh)
+      {
+         shouldClose = true; exitDir = "Buy"; threshold = highTh; closePrice = ask;
+      }
+      if(!shouldClose) continue;
+
+      int ticket = OrderTicket();
+      int orderType = OrderType();
+      double openPrice = OrderOpenPrice();
+      double lots = OrderLots();
+      
+      bool closed = false;
+      for(int r=0; r<3; r++)
+      {
+         RefreshRates(); Sleep(100);
+         closePrice = (orderType==OP_BUY) ? MarketInfo(Symbol(),MODE_BID) : MarketInfo(Symbol(),MODE_ASK);
+         closed = OrderClose(ticket, lots, closePrice, 3, clrRed);
+         if(closed) break;
+         Sleep(500);
+      }
+      if(!closed) continue;
+
+      if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY)) continue;
+      
+      double commission = OrderCommission();
+      double swap       = OrderSwap();
+      double netProfit  = OrderProfit() + commission + swap;
+      double priceDiffPips = ((orderType == OP_BUY)
+                              ? (closePrice - threshold)
+                              : (threshold - closePrice)) / tick / pipScale;
+      double pipsProfit    = ((orderType == OP_BUY)
+                              ? (closePrice - openPrice)
+                              : (openPrice - closePrice)) / tick / pipScale;
+      double slPips = 0;
+
+      LogTrade(
+         "Exit",
+         exitDir,
+         OrderCloseTime(),
+         slPips,
+         lots,
+         threshold,
+         closePrice,
+         priceDiffPips,
+         pipsProfit,
+         commission,
+         swap,
+         netProfit,
+         AccountBalance(),
+         IntegerToString(ticket),
+         0
+      );
+   }
+}
+
+//+------------------------------------------------------------------+
+//| エントリーシグナルチェック                                       |
+//+------------------------------------------------------------------+
+void CheckEntrySignals()
+{
+   double bid = MarketInfo(Symbol(), MODE_BID);
+   double ask = MarketInfo(Symbol(), MODE_ASK);
+   double tick = GetTickSize();
+   int pipScale = (Digits == 3 || Digits == 5) ? 10 : 1;
+   double spreadPips = (ask - bid) / tick / pipScale;
+   if(spreadPips > EntrySpreadPips) return;
+
+   int totalBars = Bars(Symbol(),0);
+   if(LookbackBars >= totalBars) return;
+
+   double buyTh  = GetHighThreshold(LookbackBars);
+   double sellTh = GetLowThreshold(LookbackBars);
+
+   bool buySig  = (bid >= buyTh)  && ((ask - buyTh) / tick / pipScale <= EntrySpreadPips);
+   bool sellSig = (bid <= sellTh) && ((sellTh - bid) / tick / pipScale <= EntrySpreadPips);
+
+   if(buySig)
+   {
+      double lowTh = GetLowThreshold(ExitLookbackBars);
+      OpenRealPosition(OP_BUY, buyTh, lowTh);
+   }
+   else if(sellSig)
+   {
+      double highTh = GetHighThreshold(ExitLookbackBars);
+      OpenRealPosition(OP_SELL, sellTh, highTh);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| 実ポジション建て                                                |
+//+------------------------------------------------------------------+
+int OpenRealPosition(int type, double threshold, double slThreshold)
+{
+   double lotStep = MarketInfo(Symbol(), MODE_LOTSTEP);
+   int prec = 0;
+   double tmp = lotStep;
+   while(tmp < 1.0)
+   {
+      tmp *= 10.0;
+      prec++;
+   }
+
+   double price = (type == OP_BUY) ? MarketInfo(Symbol(), MODE_ASK) : MarketInfo(Symbol(), MODE_BID);
+   double lots  = CalculateLotSize(threshold, slThreshold);
+   lots = MathFloor(lots / lotStep) * lotStep;
+   lots = NormalizeDouble(lots, prec);
+
+   int ticket = -1;
+   for(int r = 0; r < 3; r++)
+   {
+      RefreshRates();
+      Sleep(100);
+      price = (type == OP_BUY) ? MarketInfo(Symbol(), MODE_ASK) : MarketInfo(Symbol(), MODE_BID);
+      ticket = OrderSend(Symbol(), type, lots, price, 3, 0, 0, "breaksnormal101811", GetMagicNumber(), 0, clrGreen);
+      if(ticket > 0) break;
+      Sleep(500);
+   }
+
+   double bid = MarketInfo(Symbol(), MODE_BID);
+   double ask = MarketInfo(Symbol(), MODE_ASK);
+   double tick = GetTickSize();
+   int pipScale = (Digits == 3 || Digits == 5) ? 10 : 1;
+   double slPips = MathAbs(threshold - slThreshold) / tick / pipScale;
+
+   if(ticket > 0)
+   {
+      double priceDiffPips = ((type == OP_BUY)
+                              ? (threshold - price)
+                              : (price - threshold)) / tick / pipScale;
+      
+      LogTrade(
+         "Entry",
+         (type == OP_BUY) ? "Buy" : "Sell",
+         TimeCurrent(),
+         slPips,
+         lots,
+         threshold,
+         price,
+         priceDiffPips,
+         0,
+         0,
+         0,
+         0,
+         AccountBalance(),
+         IntegerToString(ticket),
+         0
+      );
+   }
+   else
+   {
+      int err = GetLastError();
+      LogTrade(
+         "Entry",
+         (type == OP_BUY) ? "Buy" : "Sell",
+         TimeCurrent(),
+         slPips,
+         lots,
+         threshold,
+         price,
+         0,
+         0,
+         0,
+         0,
+         0,
+         AccountBalance(),
+         "ERROR",
+         err
+      );
+   }
+   return(ticket);
+}
+
+//+------------------------------------------------------------------+
+//| 過去High閾値取得                                                |
+//+------------------------------------------------------------------+
+double GetHighThreshold(int BarsCount)
+{
+   double h = iHigh(Symbol(), 0, 1);
+   for(int i = 2; i <= BarsCount; i++)
+      h = MathMax(h, iHigh(Symbol(), 0, i));
+   return(h);
+}
+
+//+------------------------------------------------------------------+
+//| 過去Low閾値取得                                                 |
+//+------------------------------------------------------------------+
+double GetLowThreshold(int BarsCount)
+{
+   double l = iLow(Symbol(), 0, 1);
+   for(int i = 2; i <= BarsCount; i++)
+      l = MathMin(l, iLow(Symbol(), 0, i));
+   return(l);
+}
+
+//+------------------------------------------------------------------+
+//| ロット算出（口座資金の50%を基準）                               |
+//+------------------------------------------------------------------+
+double CalculateLotSize(double EntryPrice, double ExitPrice)
+{
+   double balance   = AccountBalance() * 0.5;
+   double riskAmt   = balance * RiskPercent / 100.0;
+   double tick      = GetTickSize();
+   int pipScale     = (Digits == 3 || Digits == 5) ? 10 : 1;
+   double stopPips  = MathAbs(EntryPrice - ExitPrice) / tick / pipScale;
+   if(stopPips <= 0) stopPips = 10;
+   
+   double tickVal   = MarketInfo(Symbol(), MODE_TICKVALUE);
+   double pipVal    = tickVal * pipScale;
+   double lotsRisk  = riskAmt / (stopPips * pipVal);
+   
+   double marginReqBroker = MarketInfo(Symbol(), MODE_MARGINREQUIRED);
+   double marginPerLot    = marginReqBroker * (MarginLimitPercent / 4.0);
+   double freeMarg        = AccountFreeMargin() * 0.5;
+   double lotsMarg        = (marginPerLot > 0) ? freeMarg / marginPerLot : lotsRisk;
+   
+   double minLot    = MarketInfo(Symbol(), MODE_MINLOT);
+   double maxLot    = MarketInfo(Symbol(), MODE_MAXLOT);
+   double result    = MathMin(lotsRisk, lotsMarg);
+   result           = MathMax(result, minLot);
+   result           = MathMin(result, maxLot);
+   
+   return result;
+}
+
+//+------------------------------------------------------------------+
+//| ユニークID生成                                                  |
+//+------------------------------------------------------------------+
+string GenerateUniqueID()
+{
+   int    ms  = GetTickCount();
+   string sym = Symbol();
+   int    sum = 0;
+   for(int i = 0; i < StringLen(sym); i++)
+      sum += StringGetCharacter(sym, i);
+   return "ID" + IntegerToString(sum) + "_" + IntegerToString(ms);
+}
+
+//+------------------------------------------------------------------+
+//| Magic Number                                                    |
+//+------------------------------------------------------------------+
+int GetMagicNumber()
+{
+   return(101319);
+}
+
+//+------------------------------------------------------------------+
+//| ティックサイズ取得（全資産クラス対応）                          |
+//+------------------------------------------------------------------+
+double GetTickSize()
+{
+   return MarketInfo(Symbol(), MODE_TICKSIZE);
+}
+
+//+------------------------------------------------------------------+
+//| CSV初期化                                                       |
+//+------------------------------------------------------------------+
+void InitializeCSV()
+{
+   int handle = FileOpen(CSVFileName, FILE_READ);
+   if(handle == INVALID_HANDLE)
+   {
+      handle = FileOpen(CSVFileName, FILE_WRITE);   
+      if(handle != INVALID_HANDLE)
+      {
+         string header = "Type,Direction,DateTime,SL_Pips,Lots,Threshold," +
+                        "ExecutionPrice,PriceDiffPips,PipsProfit," +
+                        "Commission,Swap,NetProfit,Balance,ID,ErrorCode\n";
+         FileWriteString(handle, header);
+         FileClose(handle);
+      }
+   }
+   else
+      FileClose(handle);
+}
+
+//+------------------------------------------------------------------+
+//| 全ポジションをクローズ                                           |
+//+------------------------------------------------------------------+
+void CloseAllPositions()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderSymbol() != Symbol() || OrderMagicNumber() != GetMagicNumber()) continue;
+      
+      int ticket = OrderTicket();
+      int orderType = OrderType();
+      double lots = OrderLots();
+      
+      double closePrice = (orderType == OP_BUY) ? MarketInfo(Symbol(), MODE_BID) : MarketInfo(Symbol(), MODE_ASK);
+      
+      bool closed = false;
+      for(int r = 0; r < 3; r++)
+      {
+         RefreshRates();
+         Sleep(100);
+         closePrice = (orderType == OP_BUY) ? MarketInfo(Symbol(), MODE_BID) : MarketInfo(Symbol(), MODE_ASK);
+         closed = OrderClose(ticket, lots, closePrice, 3, clrRed);
+         if(closed) break;
+         Sleep(500);
+      }
+      
+      if(closed)
+      {
+         Print("起動時クローズ: Ticket=", ticket, " Type=", (orderType == OP_BUY ? "BUY" : "SELL"));
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| 過去バーを分析して状態復元                                       |
+//+------------------------------------------------------------------+
+void AnalyzeHistoricalBars()
+{
+   int totalBars = Bars(Symbol(), 0);
+   int barsToAnalyze = MathMin(HistoryBars, totalBars - LookbackBars - 1);
+   
+   if(barsToAnalyze <= 0)
+   {
+      Print("起動時分析: 十分なバーがありません");
+      return;
+   }
+   
+   double tick = GetTickSize();
+   int pipScale = (Digits == 3 || Digits == 5) ? 10 : 1;
+   
+   // 仮想的な取引履歴を再現（ポジション保有状態のみを追跡）
+   bool inPosition = false;
+   int positionOpenBar = 0;
+   
+   // 過去から現在に向かってバーをスキャン
+   for(int bar = barsToAnalyze; bar >= 1; bar--)
+   {
+      // ポジション中でない場合、エントリーシグナルをチェック
+      if(!inPosition)
+      {
+         if(bar <= LookbackBars) continue;
+         
+         double buyTh = 0, sellTh = 0;
+         
+         // bar時点でのエントリー閾値を計算
+         buyTh = iHigh(Symbol(), 0, bar + 1);
+         for(int i = bar + 2; i <= bar + LookbackBars; i++)
+            buyTh = MathMax(buyTh, iHigh(Symbol(), 0, i));
+            
+         sellTh = iLow(Symbol(), 0, bar + 1);
+         for(int i = bar + 2; i <= bar + LookbackBars; i++)
+            sellTh = MathMin(sellTh, iLow(Symbol(), 0, i));
+         
+         double barClose = iClose(Symbol(), 0, bar);
+         
+         // Buyシグナル
+         if(barClose >= buyTh)
+         {
+            inPosition = true;
+            positionOpenBar = bar;
+         }
+         // Sellシグナル
+         else if(barClose <= sellTh)
+         {
+            inPosition = true;
+            positionOpenBar = bar;
+         }
+      }
+      else
+      {
+         // ポジション中の場合、エグジット条件をチェック
+         if(bar <= ExitLookbackBars) continue;
+         
+         double exitHighTh = iHigh(Symbol(), 0, bar + 1);
+         for(int i = bar + 2; i <= bar + ExitLookbackBars; i++)
+            exitHighTh = MathMax(exitHighTh, iHigh(Symbol(), 0, i));
+            
+         double exitLowTh = iLow(Symbol(), 0, bar + 1);
+         for(int i = bar + 2; i <= bar + ExitLookbackBars; i++)
+            exitLowTh = MathMin(exitLowTh, iLow(Symbol(), 0, i));
+         
+         double barClose = iClose(Symbol(), 0, bar);
+         
+         // エグジット条件を満たしたか
+         if(barClose <= exitLowTh || barClose >= exitHighTh)
+         {
+            inPosition = false;
+            positionOpenBar = 0;
+         }
+      }
+   }
+   
+   // 現在の状態を確認
+   if(inPosition)
+   {
+      // 実ポジションが存在するか確認
+      if(HasRealPosition())
+      {
+         Print("起動時分析: ポジション中です。次のティックでエグジットします。");
+         ShouldCloseExistingPosition = true;
+      }
+      else
+      {
+         Print("起動時分析: 理論上はポジション中ですが、実ポジションがありません。次のエントリーを待機します。");
+      }
+   }
+   else
+   {
+      // ポジション中でない場合でも実ポジションがあれば閉じる
+      if(HasRealPosition())
+      {
+         Print("起動時分析: 待機状態ですが実ポジションが存在します。次のティックでエグジットします。");
+         ShouldCloseExistingPosition = true;
+      }
+      else
+      {
+         Print("起動時分析: エントリー待機状態です。");
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ログ出力                                                        |
+//+------------------------------------------------------------------+
+void LogTrade(
+   string  Type,
+   string  Direction,
+   datetime TradeTime,
+   double  SL_Pips,
+   double  Lots,
+   double  Threshold,
+   double  ExecPrice,
+   double  PriceDiffPips,
+   double  PipsProfit,
+   double  Commission,
+   double  Swap,
+   double  NetProfit,
+   double  Balance,
+   string  ID,
+   int     ErrorCode
+)
+{
+   int handle = FileOpen(CSVFileName, FILE_READ|FILE_WRITE);
+   if(handle == INVALID_HANDLE) return;
+   FileSeek(handle, 0, SEEK_END);
+   
+   string errStr = (ErrorCode == 0) ? "" : IntegerToString(ErrorCode);
+   
+   string csvLine = Type + "," +
+                    Direction + "," +
+                    TimeToString(TradeTime, TIME_DATE|TIME_SECONDS) + "," +
+                    StringFormat("%.1f", SL_Pips) + "," +
+                    DoubleToString(Lots, 2) + "," +
+                    DoubleToString(Threshold, Digits) + "," +
+                    DoubleToString(ExecPrice, Digits) + "," +
+                    StringFormat("%.1f", PriceDiffPips) + "," +
+                    StringFormat("%.1f", PipsProfit) + "," +
+                    DoubleToString(Commission, 2) + "," +
+                    DoubleToString(Swap, 2) + "," +
+                    DoubleToString(NetProfit, 2) + "," +
+                    DoubleToString(Balance, 2) + "," +
+                    ID + "," +
+                    errStr + "\n";
+   
+   FileWriteString(handle, csvLine);
+   
+   if(StringFind(Type, "exit") >= 0 || StringFind(Type, "Exit") >= 0)
+   {
+      string separator = "--------,--------,--------,--------,--------," +
+                        "--------,--------,--------,--------,--------," +
+                        "--------,--------,--------,--------,--------\n";
+      FileWriteString(handle, separator);
+   }
+   
+   FileClose(handle);
+}
+//+------------------------------------------------------------------+
