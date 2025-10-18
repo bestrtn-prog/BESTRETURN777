@@ -17,6 +17,7 @@ input int     HistoryBars        = 200;    // 起動時の過去分析バー数
 //--- グローバル変数
 string   CSVFileName;
 bool     WaitingForExit = false;  // 起動時分析でポジション中と判定され、エグジット待ちフラグ
+bool     HistoricalAnalysisDone = false;  // 起動時分析完了フラグ
 
 //+------------------------------------------------------------------+
 //| 初期化                                                           |
@@ -31,8 +32,8 @@ int OnInit()
 
    InitializeCSV();
    
-   // 起動時に過去のバーを分析して状態を復元
-   AnalyzeHistoricalBars();
+   // 起動時分析はOnTick()の初回呼び出し時に実行
+   // （OnInit時点では十分な履歴データが読み込まれていない可能性があるため）
    
    return(INIT_SUCCEEDED);
 }
@@ -42,6 +43,13 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnTick()
 {
+   // 初回呼び出し時のみ過去分析を実行
+   if(!HistoricalAnalysisDone)
+   {
+      AnalyzeHistoricalBars();
+      HistoricalAnalysisDone = true;
+   }
+   
    if(HasRealPosition())
    {
       CheckRealPositionExit();
