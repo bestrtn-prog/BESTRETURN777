@@ -569,9 +569,11 @@ void AnalyzeHistoricalBars()
    int totalBars = Bars(Symbol(), 0);
    int barsToAnalyze = MathMin(HistoryBars, totalBars - LookbackBars - 1);
    
+   Print("起動時分析開始: totalBars=", totalBars, " barsToAnalyze=", barsToAnalyze);
+   
    if(barsToAnalyze <= 0)
    {
-      Print("起動時分析: 十分なバーがありません");
+      Print("起動時分析: 十分なバーがありません (totalBars=", totalBars, ")");
       return;
    }
    
@@ -608,8 +610,8 @@ void AnalyzeHistoricalBars()
          double barLow = iLow(Symbol(), 0, bar);
          double barClose = iClose(Symbol(), 0, bar);
          
-         // Buyシグナル
-         if(barClose >= buyTh)
+         // Buyシグナル（High価格が閾値を超えた場合）
+         if(barHigh >= buyTh)
          {
             if(!lastWasLoss)
             {
@@ -618,16 +620,17 @@ void AnalyzeHistoricalBars()
                virtualType = OP_BUY;
                virtualOpenPrice = buyTh;
                virtualOpenBar = bar;
+               Print("起動時分析: bar[", bar, "] で仮想Buyエントリー検出 (High=", barHigh, " >= buyTh=", buyTh, ")");
             }
             else
             {
                // 実ポジションが建つはずなので、このバーでクローズされたと仮定
-               // （簡略化のため、このバーで即座に決済されたと想定）
+               Print("起動時分析: bar[", bar, "] で実Buyエントリー&即決済（前回負けトレード後）");
                lastWasLoss = false;
             }
          }
-         // Sellシグナル
-         else if(barClose <= sellTh)
+         // Sellシグナル（Low価格が閾値を下回った場合）
+         else if(barLow <= sellTh)
          {
             if(!lastWasLoss)
             {
@@ -636,10 +639,12 @@ void AnalyzeHistoricalBars()
                virtualType = OP_SELL;
                virtualOpenPrice = sellTh;
                virtualOpenBar = bar;
+               Print("起動時分析: bar[", bar, "] で仮想Sellエントリー検出 (Low=", barLow, " <= sellTh=", sellTh, ")");
             }
             else
             {
                // 実ポジションが建つはずなので、このバーでクローズされたと仮定
+               Print("起動時分析: bar[", bar, "] で実Sellエントリー&即決済（前回負けトレード後）");
                lastWasLoss = false;
             }
          }
@@ -657,20 +662,23 @@ void AnalyzeHistoricalBars()
          for(int i = bar + 2; i <= bar + ExitLookbackBars; i++)
             exitLowTh = MathMin(exitLowTh, iLow(Symbol(), 0, i));
          
-         double barClose = iClose(Symbol(), 0, bar);
+         double barHigh = iHigh(Symbol(), 0, bar);
+         double barLow = iLow(Symbol(), 0, bar);
          bool shouldExit = false;
          
-         if(virtualType == OP_BUY && barClose <= exitLowTh)
+         if(virtualType == OP_BUY && barLow <= exitLowTh)
          {
             shouldExit = true;
             double profit = (exitLowTh - virtualOpenPrice) / tick / pipScale;
             lastWasLoss = (profit < 0);
+            Print("起動時分析: bar[", bar, "] で仮想Buyエグジット検出 (Low=", barLow, " <= exitLowTh=", exitLowTh, " profit=", profit, "pips lastWasLoss=", lastWasLoss, ")");
          }
-         else if(virtualType == OP_SELL && barClose >= exitHighTh)
+         else if(virtualType == OP_SELL && barHigh >= exitHighTh)
          {
             shouldExit = true;
             double profit = (virtualOpenPrice - exitHighTh) / tick / pipScale;
             lastWasLoss = (profit < 0);
+            Print("起動時分析: bar[", bar, "] で仮想Sellエグジット検出 (High=", barHigh, " >= exitHighTh=", exitHighTh, " profit=", profit, "pips lastWasLoss=", lastWasLoss, ")");
          }
          
          if(shouldExit)
@@ -686,6 +694,8 @@ void AnalyzeHistoricalBars()
    // 現在の状態を設定
    LastTradeWasLoss = lastWasLoss;
    
+   Print("起動時分析完了: inVirtualPosition=", inVirtualPosition, " virtualOpenBar=", virtualOpenBar, " LastTradeWasLoss=", lastWasLoss);
+   
    // 現在ポジション中の場合
    if(inVirtualPosition)
    {
@@ -695,7 +705,7 @@ void AnalyzeHistoricalBars()
       // 実ポジションが存在するか確認
       if(HasRealPosition())
       {
-         Print("起動時分析: ポジション中です。実ポジションあり。エグジット条件を待ちます。");
+         Print("起動時分析: ポジション中です。実ポジションあり。エグジット条件を待ちます。WaitingForExit=true");
       }
       else
       {
@@ -709,7 +719,7 @@ void AnalyzeHistoricalBars()
          VirtualPos.Lots = 0;  // ロット数は不明なので0に設定
          VirtualPos.UniqueID = "RESTORED_" + IntegerToString(GetTickCount());
          
-         Print("起動時分析: 仮想ポジションを復元しました。Type=", (virtualType == OP_BUY ? "BUY" : "SELL"), " エグジット条件を待ちます。");
+         Print("起動時分析: 仮想ポジションを復元しました。Type=", (virtualType == OP_BUY ? "BUY" : "SELL"), " エグジット条件を待ちます。WaitingForExit=true");
       }
    }
    else
@@ -719,12 +729,12 @@ void AnalyzeHistoricalBars()
       
       if(HasRealPosition())
       {
-         Print("起動時分析: 待機状態ですが実ポジションが存在します。エグジット条件を待ちます。");
+         Print("起動時分析: 待機状態ですが実ポジションが存在します。エグジット条件を待ちます。WaitingForExit=true");
          WaitingForExit = true;
       }
       else
       {
-         Print("起動時分析: エントリー待機状態。LastTradeWasLoss=", lastWasLoss);
+         Print("起動時分析: エントリー待機状態。LastTradeWasLoss=", lastWasLoss, " WaitingForExit=false");
       }
    }
 }

@@ -393,9 +393,11 @@ void AnalyzeHistoricalBars()
    int totalBars = Bars(Symbol(), 0);
    int barsToAnalyze = MathMin(HistoryBars, totalBars - LookbackBars - 1);
    
+   Print("起動時分析開始: totalBars=", totalBars, " barsToAnalyze=", barsToAnalyze);
+   
    if(barsToAnalyze <= 0)
    {
-      Print("起動時分析: 十分なバーがありません");
+      Print("起動時分析: 十分なバーがありません (totalBars=", totalBars, ")");
       return;
    }
    
@@ -425,19 +427,23 @@ void AnalyzeHistoricalBars()
          for(int i = bar + 2; i <= bar + LookbackBars; i++)
             sellTh = MathMin(sellTh, iLow(Symbol(), 0, i));
          
+         double barHigh = iHigh(Symbol(), 0, bar);
+         double barLow = iLow(Symbol(), 0, bar);
          double barClose = iClose(Symbol(), 0, bar);
          
-         // Buyシグナル
-         if(barClose >= buyTh)
+         // Buyシグナル（High価格が閾値を超えた場合）
+         if(barHigh >= buyTh)
          {
             inPosition = true;
             positionOpenBar = bar;
+            Print("起動時分析: bar[", bar, "] でBuyエントリー検出 (High=", barHigh, " >= buyTh=", buyTh, ")");
          }
-         // Sellシグナル
-         else if(barClose <= sellTh)
+         // Sellシグナル（Low価格が閾値を下回った場合）
+         else if(barLow <= sellTh)
          {
             inPosition = true;
             positionOpenBar = bar;
+            Print("起動時分析: bar[", bar, "] でSellエントリー検出 (Low=", barLow, " <= sellTh=", sellTh, ")");
          }
       }
       else
@@ -453,11 +459,13 @@ void AnalyzeHistoricalBars()
          for(int i = bar + 2; i <= bar + ExitLookbackBars; i++)
             exitLowTh = MathMin(exitLowTh, iLow(Symbol(), 0, i));
          
-         double barClose = iClose(Symbol(), 0, bar);
+         double barHigh = iHigh(Symbol(), 0, bar);
+         double barLow = iLow(Symbol(), 0, bar);
          
-         // エグジット条件を満たしたか
-         if(barClose <= exitLowTh || barClose >= exitHighTh)
+         // エグジット条件を満たしたか（Low/High価格で判定）
+         if(barLow <= exitLowTh || barHigh >= exitHighTh)
          {
+            Print("起動時分析: bar[", bar, "] でエグジット検出 (Low=", barLow, " exitLowTh=", exitLowTh, " High=", barHigh, " exitHighTh=", exitHighTh, ")");
             inPosition = false;
             positionOpenBar = 0;
          }
@@ -465,6 +473,8 @@ void AnalyzeHistoricalBars()
    }
    
    // 現在の状態を確認
+   Print("起動時分析完了: inPosition=", inPosition, " positionOpenBar=", positionOpenBar);
+   
    if(inPosition)
    {
       // ポジション中と判定された場合、エグジット待ちフラグを立てる
@@ -472,11 +482,11 @@ void AnalyzeHistoricalBars()
       
       if(HasRealPosition())
       {
-         Print("起動時分析: ポジション中です。実ポジションあり。エグジット条件を待ちます。");
+         Print("起動時分析: ポジション中です。実ポジションあり。エグジット条件を待ちます。WaitingForExit=true");
       }
       else
       {
-         Print("起動時分析: ポジション中です。実ポジションなし。エグジット条件まで新規エントリーを抑制します。");
+         Print("起動時分析: ポジション中です。実ポジションなし。エグジット条件まで新規エントリーを抑制します。WaitingForExit=true");
       }
    }
    else
@@ -486,12 +496,12 @@ void AnalyzeHistoricalBars()
       
       if(HasRealPosition())
       {
-         Print("起動時分析: 待機状態ですが実ポジションが存在します。エグジット条件を待ちます。");
+         Print("起動時分析: 待機状態ですが実ポジションが存在します。エグジット条件を待ちます。WaitingForExit=true");
          WaitingForExit = true;
       }
       else
       {
-         Print("起動時分析: エントリー待機状態です。");
+         Print("起動時分析: エントリー待機状態です。WaitingForExit=false");
       }
    }
 }
