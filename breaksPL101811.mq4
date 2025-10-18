@@ -575,15 +575,30 @@ void InitializeCSV()
 void AnalyzeHistoricalBars()
 {
    int totalBars = Bars(Symbol(), 0);
-   int barsToAnalyze = MathMin(HistoryBars, totalBars - LookbackBars - 1);
    
-   Print("起動時分析開始: totalBars=", totalBars, " barsToAnalyze=", barsToAnalyze);
+   Print("========================================");
+   Print("起動時分析開始");
+   Print("totalBars=", totalBars);
+   Print("LookbackBars=", LookbackBars);
+   Print("HistoryBars(パラメータ)=", HistoryBars);
    
-   if(barsToAnalyze <= 0)
+   // 最低限必要なバー数をチェック
+   int minRequired = LookbackBars + 2;  // エントリー判定に最低限必要
+   if(totalBars < minRequired)
    {
-      Print("起動時分析: 十分なバーがありません (totalBars=", totalBars, ")");
+      Print("起動時分析: バーが不足しています (totalBars=", totalBars, " < minRequired=", minRequired, ")");
+      Print("起動時分析: エントリー待機状態として扱います");
+      WaitingForExit = false;
+      LastTradeWasLoss = false;
+      Print("========================================");
       return;
    }
+   
+   // 分析可能なバー数を計算（利用可能な範囲で）
+   int barsToAnalyze = MathMin(HistoryBars, totalBars - LookbackBars - 1);
+   barsToAnalyze = MathMax(1, barsToAnalyze);  // 最低でも1本は分析
+   
+   Print("分析対象バー数: barsToAnalyze=", barsToAnalyze);
    
    double tick = GetTickSize();
    int pipScale = (Digits == 3 || Digits == 5) ? 10 : 1;
@@ -702,7 +717,9 @@ void AnalyzeHistoricalBars()
    // 現在の状態を設定
    LastTradeWasLoss = lastWasLoss;
    
+   Print("----------------------------------------");
    Print("起動時分析完了: inVirtualPosition=", inVirtualPosition, " virtualOpenBar=", virtualOpenBar, " LastTradeWasLoss=", lastWasLoss);
+   Print("HasRealPosition()=", HasRealPosition());
    
    // 現在ポジション中の場合
    if(inVirtualPosition)
@@ -745,6 +762,8 @@ void AnalyzeHistoricalBars()
          Print("起動時分析: エントリー待機状態。LastTradeWasLoss=", lastWasLoss, " WaitingForExit=false");
       }
    }
+   
+   Print("========================================");
 }
 
 //+------------------------------------------------------------------+
