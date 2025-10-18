@@ -17,7 +17,7 @@ input int     HistoryBars        = 200;    // 起動時の過去分析バー数
 //--- グローバル変数
 string   CSVFileName;
 bool     LastTradeWasLoss = false;
-bool     ShouldCloseExistingPosition = false;  // 起動時に既存ポジションをクローズするフラグ
+bool     WaitingForExit = false;  // 起動時分析でポジション中と判定され、エグジット待ちフラグ
 
 //--- 仮想ポジション構造体
 struct VirtualPosition
@@ -62,25 +62,35 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // 起動時に既存ポジションをクローズする必要がある場合
-   if(ShouldCloseExistingPosition)
-   {
-      CloseAllPositions();
-      ShouldCloseExistingPosition = false;
-      Print("起動時の既存ポジションをクローズしました。次のエントリーまで待機します。");
-      return;
-   }
-   
    if(HasRealPosition())
    {
       CheckRealPositionExit();
+      // ポジションがクローズされたらWaitingForExitフラグを解除
+      if(!HasRealPosition() && WaitingForExit)
+      {
+         WaitingForExit = false;
+         Print("エグジット完了。次のエントリーシグナルを待機します。");
+      }
       return;
    }
    if(VirtualPos.Active)
    {
       CheckVirtualPositionExit();
+      // 仮想ポジションがクローズされたらWaitingForExitフラグを解除
+      if(!VirtualPos.Active && WaitingForExit)
+      {
+         WaitingForExit = false;
+         Print("仮想ポジションエグジット完了。次のエントリーシグナルを待機します。");
+      }
       return;
    }
+   
+   // WaitingForExitフラグが立っている場合は新規エントリーしない
+   if(WaitingForExit)
+   {
+      return;
+   }
+   
    CheckEntrySignals();
 }
 
@@ -552,40 +562,6 @@ void InitializeCSV()
 }
 
 //+------------------------------------------------------------------+
-//| 全ポジションをクローズ                                           |
-//+------------------------------------------------------------------+
-void CloseAllPositions()
-{
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-   {
-      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderSymbol() != Symbol() || OrderMagicNumber() != GetMagicNumber()) continue;
-      
-      int ticket = OrderTicket();
-      int orderType = OrderType();
-      double lots = OrderLots();
-      
-      double closePrice = (orderType == OP_BUY) ? MarketInfo(Symbol(), MODE_BID) : MarketInfo(Symbol(), MODE_ASK);
-      
-      bool closed = false;
-      for(int r = 0; r < 3; r++)
-      {
-         RefreshRates();
-         Sleep(100);
-         closePrice = (orderType == OP_BUY) ? MarketInfo(Symbol(), MODE_BID) : MarketInfo(Symbol(), MODE_ASK);
-         closed = OrderClose(ticket, lots, closePrice, 3, clrRed);
-         if(closed) break;
-         Sleep(500);
-      }
-      
-      if(closed)
-      {
-         Print("起動時クローズ: Ticket=", ticket, " Type=", (orderType == OP_BUY ? "BUY" : "SELL"));
-      }
-   }
-}
-
-//+------------------------------------------------------------------+
 //| 過去バーを分析して状態復元                                       |
 //+------------------------------------------------------------------+
 void AnalyzeHistoricalBars()
@@ -713,11 +689,13 @@ void AnalyzeHistoricalBars()
    // 現在ポジション中の場合
    if(inVirtualPosition)
    {
+      // ポジション中と判定された場合、エグジット待ちフラグを立てる
+      WaitingForExit = true;
+      
       // 実ポジションが存在するか確認
       if(HasRealPosition())
       {
-         Print("起動時分析: 実ポジションが存在します。次のティックでエグジットします。");
-         ShouldCloseExistingPosition = true;
+         Print("起動時分析: ポジション中です。実ポジションあり。エグジット条件を待ちます。");
       }
       else
       {
@@ -731,16 +709,18 @@ void AnalyzeHistoricalBars()
          VirtualPos.Lots = 0;  // ロット数は不明なので0に設定
          VirtualPos.UniqueID = "RESTORED_" + IntegerToString(GetTickCount());
          
-         Print("起動時分析: 仮想ポジションを復元しました。Type=", (virtualType == OP_BUY ? "BUY" : "SELL"));
+         Print("起動時分析: 仮想ポジションを復元しました。Type=", (virtualType == OP_BUY ? "BUY" : "SELL"), " エグジット条件を待ちます。");
       }
    }
    else
    {
-      // ポジション中でない場合でも実ポジションがあれば閉じる
+      // ポジション中でない場合
+      WaitingForExit = false;
+      
       if(HasRealPosition())
       {
-         Print("起動時分析: 待機状態ですが実ポジションが存在します。次のティックでエグジットします。");
-         ShouldCloseExistingPosition = true;
+         Print("起動時分析: 待機状態ですが実ポジションが存在します。エグジット条件を待ちます。");
+         WaitingForExit = true;
       }
       else
       {
